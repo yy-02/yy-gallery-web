@@ -40,9 +40,10 @@ export default function AnimalPhotoPage() {
   if (!photo) return null;
 
   const animalName = i18n.language === 'zh-CN' ? photo.animal.name_zh : photo.animal.name_en
-  const description = i18n.language === 'zh-CN' 
+  const _description = i18n.language === 'zh-CN' 
     ? (photo.description_zh || photo.description_en) 
     : (photo.description_en || photo.description_zh)
+  void _description
 
   return (
     <div className='scrollbar-hide px-[10px] md:px-[20px] box-content pt-4 pb-12'>

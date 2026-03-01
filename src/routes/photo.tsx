@@ -30,7 +30,7 @@ export default function PhotoPage() {
   const { id } = useParams()
   const [photo, setPhoto] = useState<Photo>()
   const isDesktop = useMediaQuery('(min-width: 960px)');
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [showHDR, setShowHDR] = useState(false);
 
   useEffect(() => {
