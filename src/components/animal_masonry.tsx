@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Response, AnimalPhoto } from "../models/gallery.ts";
 import { api } from "../lib/api";
 import { Card, Image, CardFooter, CardBody, useDisclosure } from "@heroui/react";
@@ -15,11 +15,15 @@ import { useNavigate } from "react-router-dom";
 import AnimalModal from "./animal_modal.tsx";
 import { useTranslation } from "react-i18next";
 
+const PAGE_SIZE = 20;
 
 export default function AnimalMasonry() {
   const [photos, setPhotos] = useState<AnimalPhoto[]>([])
+  const [hasMore, setHasMore] = useState(true)
   const isDesktop = useMediaQuery('(min-width: 720px)');
-  const loadedIndex = useRef<{ startIndex: number, stopIndex: number }[]>([]);
+  const loadingRef = useRef(false);
+  const currentPageRef = useRef(1);
+  const loadedIdsRef = useRef<Set<number>>(new Set());
 
   const containerRef = useRef(null);
   const [windowWidth, height] = useWindowSize();
@@ -35,36 +39,56 @@ export default function AnimalMasonry() {
   const { scrollTop, isScrolling } = useScroller(offset);
 
   useEffect(() => {
+    currentPageRef.current = 1;
+    loadedIdsRef.current = new Set();
+    setHasMore(true);
+    
     api.get<Response<AnimalPhoto[]>>('/animals/photos', {
       params: {
-        page_size: 20
+        page_size: PAGE_SIZE
       }
     }).then(res => {
-      setPhotos(res.data.payload)
+      const newPhotos = res.data.payload;
+      newPhotos.forEach(p => loadedIdsRef.current.add(p.id));
+      setPhotos(newPhotos);
+      setHasMore(newPhotos.length >= PAGE_SIZE);
     })
   }, [])
 
-  const maybeLoadMore = useInfiniteLoader((startIndex, stopIndex, items) => {
-    if (loadedIndex.current.find((e) => e.startIndex === startIndex && e.stopIndex === stopIndex)) {
-      return;
-    }
-    loadedIndex.current.push({ startIndex, stopIndex })
+  const maybeLoadMore = useInfiniteLoader(
+    useCallback(() => {
+      if (loadingRef.current || !hasMore || photos.length === 0) {
+        return;
+      }
+      
+      loadingRef.current = true;
+      const lastDatetime = photos[photos.length - 1].metadata.datetime;
 
-    const lastDatetime = (items[items.length - 1] as AnimalPhoto).metadata.datetime
-    api.get<Response<AnimalPhoto[]>>('/animals/photos', {
-      params: {
-        page_size: stopIndex - startIndex,
-        last_datetime: lastDatetime,
-      }
-    }).then((res) => {
-      const newItems = res.data.payload.filter((item) => !photos.find(p => p.id === item.id));
-      if (newItems.length > 0) {
-        setPhotos((current) => [...current, ...newItems]);
-      }
-    })
-  }, {
-    isItemLoaded: (index, items) => !!items[index],
-  });
+      api.get<Response<AnimalPhoto[]>>('/animals/photos', {
+        params: {
+          page_size: PAGE_SIZE,
+          last_datetime: lastDatetime,
+        }
+      }).then((res) => {
+        const newPhotos = res.data.payload.filter(p => !loadedIdsRef.current.has(p.id));
+        
+        if (newPhotos.length > 0) {
+          newPhotos.forEach(p => loadedIdsRef.current.add(p.id));
+          setPhotos((current) => [...current, ...newPhotos]);
+          currentPageRef.current += 1;
+        }
+        
+        setHasMore(res.data.payload.length >= PAGE_SIZE);
+      }).finally(() => {
+        loadingRef.current = false;
+      });
+    }, [hasMore, photos]),
+    {
+      isItemLoaded: (index, items) => !!items[index],
+      minimumBatchSize: PAGE_SIZE,
+      threshold: 3,
+    }
+  );
 
   return useMasonry({
     positioner,
