@@ -1,7 +1,6 @@
 import sonyAlpha from '../assets/logos/Sony_Alpha_logo.svg';
 import lumix from '../assets/logos/Lumix_logo.svg';
 import lumixDark from '../assets/logos/Lumix_logo_dark.svg';
-import nikonLogoTm from '../assets/logos/Nikon-logo-tm.svg';
 import nikonZ5Black from '../assets/logos/z-5-black.svg';
 import nikonZ5White from '../assets/logos/z-5-white.svg';
 import nikonZ8Black from '../assets/logos/z-8-black.svg';
@@ -47,9 +46,8 @@ export default function CameraName(props: CameraNameProps) {
     const modelLogo = nikonModels[props.camera.general_name]
     cameraName = <Tooltip content={props.camera.model} showArrow placement='right'>
       <div className='flex items-center gap-1'>
-        <img alt='Nikon' src={nikonLogoTm} className='h-[1.1rem] inline'/>
         <span className='text-[0.75rem] font-semibold'>NIKON</span>
-        <img alt={props.camera.general_name} src={darkmode.value ? modelLogo.dark : modelLogo.light} className='h-[1.1rem] inline'/>
+        <img alt={props.camera.general_name} src={darkmode.value ? modelLogo.dark : modelLogo.light} className='h-[0.75rem] inline'/>
       </div>
     </Tooltip>
   } else if (props.camera.manufacture.name === 'Canon') {
