@@ -1,7 +1,7 @@
 import { useParams } from "react-router-dom";
 import { useEffect, useState, cloneElement, MouseEvent } from "react";
 import { Photo, Response } from "../models/gallery.ts";
-import axios from "axios";
+import { api } from "../lib/api";
 import {
   Button,
   Card,
@@ -30,11 +30,11 @@ export default function PhotoPage() {
   const { id } = useParams()
   const [photo, setPhoto] = useState<Photo>()
   const isDesktop = useMediaQuery('(min-width: 960px)');
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [showHDR, setShowHDR] = useState(false);
 
   useEffect(() => {
-    axios.get<Response<Photo>>('https://api.gallery.boar.ac.cn/photos/get', {
+    api.get<Response<Photo>>('/photos/get', {
       params: { id }
     }).then((res) => {
       setPhoto(res.data.payload)
@@ -107,6 +107,18 @@ export default function PhotoPage() {
           :
           null
       }
+
+      {/* 照片说明 - 暂时隐藏 */}
+      {/* {
+        (photo.description_zh || photo.description_en) &&
+        <Card className='mt-4'>
+          <CardBody>
+            <p className='text-default-700 whitespace-pre-wrap'>
+              {i18n.language === 'zh-CN' ? (photo.description_zh || photo.description_en) : (photo.description_en || photo.description_zh)}
+            </p>
+          </CardBody>
+        </Card>
+      } */}
 
       <div className='gap-4 grid grid-cols-1 md:grid-cols-2 mt-4 pb-4'>
         <div>

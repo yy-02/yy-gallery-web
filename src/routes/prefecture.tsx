@@ -1,8 +1,8 @@
 import PhotoMasonry from "../components/photo_masonry.tsx";
 import { useNavigate, useParams } from "react-router-dom";
 import { useEffect, useState } from "react";
-import axios from "axios";
 import { Prefecture, Response } from "../models/gallery.ts";
+import { api } from "../lib/api";
 import { Chip, Select, SelectItem } from "@heroui/react";
 import { useTranslation } from "react-i18next";
 
@@ -13,7 +13,7 @@ export default function PrefecturePage() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    axios.get<Response<Prefecture>>('https://api.gallery.boar.ac.cn/geo/prefecture', {
+    api.get<Response<Prefecture>>('/geo/prefecture', {
       params: {
         id: params.prefectureId,
         with_cities: true

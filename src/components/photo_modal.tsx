@@ -14,7 +14,7 @@ import DialogMap from "./dialog_map.tsx";
 import { MdOutlineOpenInNew } from "react-icons/md";
 import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import { api } from "../lib/api";
 import CameraName from "./camera_name.tsx";
 
 export interface PhotoModalProps {
@@ -33,7 +33,7 @@ export default function PhotoModal(props: PhotoModalProps) {
     if (props.isOpen) {
       setLoading(true)
       setTimeout(() => {
-        axios.get<Response<Photo>>(`https://api.gallery.boar.ac.cn/photos/get?id=${props.photo.id}`).then(res => {
+        api.get<Response<Photo>>(`/photos/get?id=${props.photo.id}`).then(res => {
           setPhoto(res.data.payload)
           setLoading(false)
         })

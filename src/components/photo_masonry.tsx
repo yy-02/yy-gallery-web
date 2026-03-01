@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import axios from "axios";
 import { Photo, Response } from "../models/gallery.ts";
+import { api } from "../lib/api";
 import { Card, Image, CardFooter, CardBody, useDisclosure } from "@heroui/react";
 import useMediaQuery from "../hooks/useMediaQuery.tsx";
 import PhotoModal from "../components/photo_modal.tsx";
@@ -38,7 +38,7 @@ export default function PhotoMasonry(props: { prefectureId?: string, cityId?: st
   }), [props.cityId, props.prefectureId])
 
   useEffect(() => {
-    axios.get<Response<Photo[]>>('https://api.gallery.boar.ac.cn/photos/all', {
+    api.get<Response<Photo[]>>('/photos/all', {
       params: {
         ...query,
         page_size: 20
@@ -55,7 +55,7 @@ export default function PhotoMasonry(props: { prefectureId?: string, cityId?: st
     loadedIndex.current.push({ startIndex, stopIndex })
 
     const lastDate = (items[items.length - 1] as Photo).metadata.datetime
-    axios.get<Response<Photo[]>>('https://api.gallery.boar.ac.cn/photos/all', {
+    api.get<Response<Photo[]>>('/photos/all', {
       params: {
         ...query,
         page_size: stopIndex - startIndex,

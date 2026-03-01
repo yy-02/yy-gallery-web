@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { Country, PhotoClusterItem, Response } from "../models/gallery.ts";
-import axios from "axios";
+import { api } from "../lib/api";
 import { Card } from "@heroui/react";
 import useDarkMode from "use-dark-mode";
 import { Annotation, ColorScheme, Map, MapType } from "mapkit-react";
@@ -15,14 +15,14 @@ export default function ClusterPage() {
   const appleRef = useRef<mapkit.Map | null>(null)
 
   useEffect(() => {
-    axios.get<Response<Country[]>>('https://api.gallery.boar.ac.cn/geo/countries').then((res) => {
+    api.get<Response<Country[]>>('/geo/countries').then((res) => {
       // setCountries(res.data.payload)
       setCountry(res.data.payload[0])
     })
   }, []);
 
   useEffect(() => {
-    axios.get<Response<PhotoClusterItem[]>>(`https://api.gallery.boar.ac.cn/photos/cluster?country_id=${country?.id}`).then((res) => {
+    api.get<Response<PhotoClusterItem[]>>(`/photos/cluster?country_id=${country?.id}`).then((res) => {
       setClusterItems(res.data.payload)
     })
   }, [country])

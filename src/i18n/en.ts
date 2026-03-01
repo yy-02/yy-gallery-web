@@ -2,8 +2,7 @@ export default {
   translation: {
     "sidebar.home": "Timeline",
     "sidebar.map": "Map",
-    "sidebar.shuin": "Shuin",
-    "sidebar.lucky": "I'm Feeling Lucky",
+    "sidebar.animals": "Wildlife",
 
     "map.countries": "Country / Region",
     "map.select_country": "Select a country or region",
@@ -19,13 +18,13 @@ export default {
     "photo.enable_hdr": "HDR",
     "photo.hdr_tooltip": "Not all devices support High Dynamic Range (HDR) display.",
 
-    "shuin.basic_information": "Information",
-    "shuin.is_limited": "LIMITED",
-    "shuin.price": "Price",
-    "shuin.type.written": "Hand-written",
-    "shuin.type.leaflet": "Pre-printed",
-    "shuin.yen": "yen",
-    "shuin.genre.shrine": "Shrine",
-    "shuin.genre.temple": "Temple",
+    "animal.info": "Species Info",
+    "animal.category.bird": "Bird",
+    "animal.category.mammal": "Mammal",
+    "animal.category.insect": "Insect",
+    "animal.category.reptile": "Reptile",
+    "animal.category.amphibian": "Amphibian",
+    "animal.category.fish": "Fish",
+    "animal.category.other": "Other",
   }
 }

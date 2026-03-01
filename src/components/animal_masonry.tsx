@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Response, Shuin } from "../models/gallery.ts";
+import { Response, AnimalPhoto } from "../models/gallery.ts";
 import { api } from "../lib/api";
 import { Card, Image, CardFooter, CardBody, useDisclosure } from "@heroui/react";
 import useMediaQuery from "../hooks/useMediaQuery.tsx";
@@ -12,12 +12,12 @@ import {
   useScroller
 } from "masonic";
 import { useNavigate } from "react-router-dom";
-import ShuinModal from "./shuin_modal.tsx";
+import AnimalModal from "./animal_modal.tsx";
 import { useTranslation } from "react-i18next";
 
 
-export default function ShuinMasonry() {
-  const [shuin, setShuin] = useState<Shuin[]>([])
+export default function AnimalMasonry() {
+  const [photos, setPhotos] = useState<AnimalPhoto[]>([])
   const isDesktop = useMediaQuery('(min-width: 720px)');
   const loadedIndex = useRef<{ startIndex: number, stopIndex: number }[]>([]);
 
@@ -35,12 +35,12 @@ export default function ShuinMasonry() {
   const { scrollTop, isScrolling } = useScroller(offset);
 
   useEffect(() => {
-    api.get<Response<Shuin[]>>('/shuin/all', {
+    api.get<Response<AnimalPhoto[]>>('/animals/photos', {
       params: {
         page_size: 20
       }
     }).then(res => {
-      setShuin(res.data.payload)
+      setPhotos(res.data.payload)
     })
   }, [])
 
@@ -50,16 +50,16 @@ export default function ShuinMasonry() {
     }
     loadedIndex.current.push({ startIndex, stopIndex })
 
-    const lastDate = (items[items.length - 1] as Shuin).date
-    api.get<Response<Shuin[]>>('/shuin/all', {
+    const lastDatetime = (items[items.length - 1] as AnimalPhoto).metadata.datetime
+    api.get<Response<AnimalPhoto[]>>('/animals/photos', {
       params: {
         page_size: stopIndex - startIndex,
-        last_date: lastDate,
+        last_datetime: lastDatetime,
       }
     }).then((res) => {
-      const newItems = res.data.payload.filter((item) => !shuin.find(s => s.id === item.id));
+      const newItems = res.data.payload.filter((item) => !photos.find(p => p.id === item.id));
       if (newItems.length > 0) {
-        setShuin((current) => [...current, ...newItems]);
+        setPhotos((current) => [...current, ...newItems]);
       }
     })
   }, {
@@ -72,7 +72,7 @@ export default function ShuinMasonry() {
     isScrolling,
     height,
     containerRef,
-    items: shuin,
+    items: photos,
     overscanBy: 3,
     itemHeightEstimate: 0,
     onRender: maybeLoadMore,
@@ -81,16 +81,18 @@ export default function ShuinMasonry() {
   })
 }
 
-const MasonryCard = ({ data }: { data: Shuin }) => {
+const MasonryCard = ({ data }: { data: AnimalPhoto }) => {
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
   const isDesktop = useMediaQuery('(min-width: 960px)');
   const navigate = useNavigate()
-  const { t } = useTranslation()
+  const { i18n } = useTranslation()
 
   const openPhotoModel = useMemo(() => () => {
-    history.pushState({}, '', `/shuin/${data.id}`)
+    history.pushState({}, '', `/animal/${data.id}`)
     onOpen();
   }, [onOpen, data.id])
+
+  const animalName = i18n.language === 'zh-CN' ? data.animal.name_zh : data.animal.name_en
 
   return <Card
     radius="lg"
@@ -114,14 +116,16 @@ const MasonryCard = ({ data }: { data: Shuin }) => {
     </CardBody>
     <CardFooter className="text-small justify-between flex-wrap">
       <b>
-        {data.place.name}
+        {animalName}
       </b>
-      <p className="text-default-500">
-        {t(`shuin.genre.${data.genre}`)}
-      </p>
+      {data.animal.scientific_name && (
+        <p className="text-default-400 text-xs italic truncate">
+          {data.animal.scientific_name}
+        </p>
+      )}
     </CardFooter>
 
-    <ShuinModal shuin={data} isOpen={isOpen} onOpenChange={(isOpen, path) => {
+    <AnimalModal photo={data} isOpen={isOpen} onOpenChange={(isOpen, path) => {
       if (!isOpen && path) {
         navigate(path)
       } else if (!isOpen) {

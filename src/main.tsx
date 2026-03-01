@@ -11,7 +11,6 @@ import { initReactI18next } from "react-i18next";
 import LanguageDetector from 'i18next-browser-languagedetector';
 import en from "./i18n/en.ts";
 import zh_CN from "./i18n/zh_CN.ts";
-import ja from "./i18n/ja.ts";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error
@@ -24,8 +23,8 @@ i18n
     resources: {
       en: en,
       "zh-CN": zh_CN,
-      ja: ja,
     },
+    fallbackLng: 'en',
     interpolation: {
       escapeValue: false
     }

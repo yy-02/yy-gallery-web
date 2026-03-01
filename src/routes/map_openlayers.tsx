@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Country, Prefecture, Response } from "../models/gallery.ts";
-import axios from "axios";
+import { api } from "../lib/api";
 import VectorLayer from "ol/layer/Vector";
 import VectorSource from "ol/source/Vector";
 import GeoJSON from 'ol/format/GeoJSON';
@@ -27,7 +27,7 @@ export default function MapPage() {
   const { t } = useTranslation()
 
   useEffect(() => {
-    axios.get<Response<Country[]>>('https://api.gallery.boar.ac.cn/geo/countries').then((res) => {
+    api.get<Response<Country[]>>('/geo/countries').then((res) => {
       setCountries(res.data.payload)
       setCountry(res.data.payload[0])
     })
@@ -35,7 +35,7 @@ export default function MapPage() {
 
   useEffect(() => {
     if (country) {
-      axios.get<Response<Prefecture[]>>('https://api.gallery.boar.ac.cn/geo/prefectures', {
+      api.get<Response<Prefecture[]>>('/geo/prefectures', {
         params: {
           country_id: country.id,
           with_photos_count: true

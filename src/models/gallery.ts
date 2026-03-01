@@ -8,6 +8,8 @@ export interface Photo {
   id: number
   title: string
   description: string
+  description_zh?: string
+  description_en?: string
   author?: Author
   metadata: Metadata
   thumb_file: File
@@ -16,18 +18,27 @@ export interface Photo {
   hdr_file?: File
 }
 
-export interface Shuin {
+export interface Animal {
   id: number
-  place: Place
-  is_limited: boolean
-  price: number
-  type: string
+  name_zh: string
+  name_en: string
+  scientific_name?: string
+  description_zh?: string
+  description_en?: string
+  category: string
+  photos_count?: number
+}
+
+export interface AnimalPhoto {
+  id: number
+  animal: Animal
+  description_zh?: string
+  description_en?: string
+  metadata: Metadata
   thumb_file: File
   medium_file?: File
   large_file?: File
   hdr_file?: File
-  date: string
-  genre: string
 }
 
 export interface PhotoClusterItem {

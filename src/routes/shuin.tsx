@@ -1,7 +1,7 @@
 import { useParams } from "react-router-dom";
 import { useEffect, useState, cloneElement, MouseEvent } from "react";
 import { Shuin, Response } from "../models/gallery.ts";
-import axios from "axios";
+import { api } from "../lib/api";
 import {
   Button,
   Card,
@@ -27,7 +27,7 @@ export default function ShuinPage() {
   const { t } = useTranslation()
 
   useEffect(() => {
-    axios.get<Response<Shuin>>('https://api.gallery.boar.ac.cn/shuin/get', {
+    api.get<Response<Shuin>>('/shuin/get', {
       params: { id }
     }).then((res) => {
       setShuin(res.data.payload)

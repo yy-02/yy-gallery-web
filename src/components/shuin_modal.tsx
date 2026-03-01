@@ -13,7 +13,7 @@ import DialogMap from "./dialog_map.tsx";
 import { MdOutlineOpenInNew } from "react-icons/md";
 import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import { api } from "../lib/api";
 
 export interface ShuinModalProps {
   shuin: Shuin
@@ -31,7 +31,7 @@ export default function ShuinModal(props: ShuinModalProps) {
     if (props.isOpen) {
       setLoading(true)
       setTimeout(() => {
-        axios.get<Response<Shuin>>(`https://api.gallery.boar.ac.cn/shuin/get?id=${props.shuin.id}`).then(res => {
+        api.get<Response<Shuin>>(`/shuin/get?id=${props.shuin.id}`).then(res => {
           setShuin(res.data.payload)
           setLoading(false)
         })

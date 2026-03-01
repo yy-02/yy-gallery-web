@@ -1,0 +1,17 @@
+# Cloudflare Workers 配置
+name = "yy-gallery-api"
+main = "src/index.cloudflare.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 环境变量（敏感变量用 wrangler secret put 设置）
+[vars]
+# MAPBOX_TOKEN = "your-token"
+
+# 生产环境配置
+[env.production]
+name = "yy-gallery-api"
+
+# 开发环境
+[env.development]
+name = "yy-gallery-api-dev"
