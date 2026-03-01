@@ -22,7 +22,7 @@
     "exif-reader": "^2.0.1",
     "hono": "^4.6.0",
     "postgres": "^3.4.5",
-    "sharp": "^0.33.5"
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241127.0",

@@ -6,6 +6,9 @@ type Bindings = {
   SUPABASE_URL: string
   SUPABASE_ANON_KEY: string
   MAPBOX_TOKEN?: string
+  MAPKIT_PRIVATE_KEY?: string
+  MAPKIT_KEY_ID?: string
+  MAPKIT_TEAM_ID?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -488,7 +491,70 @@ app.get('/mapbox/token', async (c) => {
 })
 
 app.get('/mapkit-js/token', async (c) => {
-  return c.json(error('MapKit not configured', 500), 500)
+  const privateKeyPem = c.env.MAPKIT_PRIVATE_KEY
+  const keyId = c.env.MAPKIT_KEY_ID
+  const teamId = c.env.MAPKIT_TEAM_ID
+
+  if (!privateKeyPem || !keyId || !teamId) {
+    return c.json(error('MapKit credentials not configured', 500), 500)
+  }
+
+  try {
+    const header = {
+      alg: 'ES256',
+      typ: 'JWT',
+      kid: keyId,
+    }
+
+    const now = Math.floor(Date.now() / 1000)
+    const payload = {
+      iss: teamId,
+      iat: now,
+      exp: now + 3600,
+      origin: c.req.header('origin') || '*',
+    }
+
+    const base64urlEncode = (data: string) => {
+      return btoa(data).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    }
+
+    const base64Header = base64urlEncode(JSON.stringify(header))
+    const base64Payload = base64urlEncode(JSON.stringify(payload))
+    const unsignedToken = `${base64Header}.${base64Payload}`
+
+    // Parse PEM key for Web Crypto API
+    const pemContents = privateKeyPem
+      .replace('-----BEGIN PRIVATE KEY-----', '')
+      .replace('-----END PRIVATE KEY-----', '')
+      .replace(/\s/g, '')
+    
+    const binaryKey = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0))
+    
+    const cryptoKey = await crypto.subtle.importKey(
+      'pkcs8',
+      binaryKey,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign']
+    )
+
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      cryptoKey,
+      new TextEncoder().encode(unsignedToken)
+    )
+
+    // Convert signature to base64url
+    const signatureArray = new Uint8Array(signature)
+    const signatureBase64 = btoa(String.fromCharCode(...signatureArray))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+    const token = `${unsignedToken}.${signatureBase64}`
+    return c.json(success(token))
+  } catch (e) {
+    console.error('Failed to generate MapKit token:', e)
+    return c.json(error('Failed to generate token', 500), 500)
+  }
 })
 
 // ==================== Animals API ====================

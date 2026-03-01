@@ -1,8 +1,8 @@
 /**
  * 本地图片处理和上传脚本
  * 
- * 支持输入格式：JPEG, PNG, WebP, HEIC, TIFF
- * 输出格式：WebP（体积小、质量好）
+ * 支持输入格式：JPEG, PNG, WebP, AVIF, HEIC, TIFF
+ * 输出格式：AVIF（体积小、质量好）
  * 
  * 使用方法：
  * npx tsx scripts/upload-photos.ts ./photos-folder
@@ -17,7 +17,8 @@
  * 
  * 注意：
  * - NEF/DNG 等 RAW 格式需要先用 Lightroom 导出为 JPEG
- * - HEIC 格式需要系统支持（Windows 可能需要安装 HEIC 编解码器）
+ * - AVIF 输入需要系统安装 ffmpeg
+ * - HEIC 格式需要系统支持
  */
 
 import fs from 'fs'
@@ -25,24 +26,29 @@ import path from 'path'
 import sharp from 'sharp'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import postgres from 'postgres'
+import { execSync } from 'child_process'
+import os from 'os'
 import 'dotenv/config'
 
 // 输出尺寸配置
 const SIZES = {
   thumb: 400,    // 缩略图（瀑布流）
   medium: 1200,  // 中等尺寸（弹窗预览）
-  large: 2400,   // 大图（详情页）
+  large: 3840,   // 大图（详情页，4K）
 }
 
-// WebP 质量配置
-const WEBP_QUALITY = {
-  thumb: 80,
-  medium: 85,
-  large: 90,
+// AVIF 质量配置（0-100，越高越好）
+const AVIF_QUALITY = {
+  thumb: 75,
+  medium: 82,
+  large: 92,     // 4K 使用更高质量
 }
+
+// 使用 CPU 编码以支持 10-bit 4:4:4 色度采样（最高质量）
+console.log('ℹ 使用 CPU 编码 (libaom-av1, 10-bit 4:4:4)')
 
 // 支持的输入格式
-const SUPPORTED_FORMATS = /\.(jpg|jpeg|png|webp|heic|heif|tiff|tif)$/i
+const SUPPORTED_FORMATS = /\.(jpg|jpeg|png|webp|avif|heic|heif|tiff|tif)$/i
 
 // S3 客户端配置
 const s3Client = new S3Client({
@@ -101,98 +107,279 @@ interface ExifData {
 }
 
 /**
- * 从图片中提取 EXIF 信息
+ * 使用 ffprobe 从 AVIF 文件提取 EXIF 信息
  */
-async function extractExif(buffer: Buffer): Promise<ExifData> {
+async function extractExifWithFfprobe(filePath: string): Promise<ExifData> {
+  const result: ExifData = {}
+  
+  try {
+    // 使用 exiftool 提取（比 ffprobe 更完整）
+    // 如果没有 exiftool，回退到 ffprobe
+    let jsonOutput: string
+    
+    try {
+      jsonOutput = execSync(`exiftool -json "${filePath}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+    } catch {
+      // exiftool 不可用，使用 ffprobe
+      console.log('  Using ffprobe for EXIF (install exiftool for better results)')
+      const ffprobeOutput = execSync(`ffprobe -v quiet -print_format json -show_format "${filePath}"`, { encoding: 'utf-8' })
+      const data = JSON.parse(ffprobeOutput)
+      // ffprobe 的 EXIF 信息较有限，返回空结果让调用方处理
+      return result
+    }
+    
+    const data = JSON.parse(jsonOutput)[0]
+    
+    // 拍摄时间
+    if (data.DateTimeOriginal) {
+      // exiftool 格式: "2025:11:23 16:45:35"
+      const dtStr = data.DateTimeOriginal.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3')
+      result.datetime = new Date(dtStr)
+      console.log(`  DateTime: ${result.datetime.toISOString()}`)
+    }
+    
+    // 曝光时间
+    if (data.ExposureTime) {
+      // 可能是 "1/50" 或 "0.02"
+      if (typeof data.ExposureTime === 'string' && data.ExposureTime.includes('/')) {
+        const [num, den] = data.ExposureTime.split('/')
+        result.exposureTime = parseInt(num) / parseInt(den)
+        result.exposureTimeRat = data.ExposureTime
+      } else {
+        result.exposureTime = parseFloat(data.ExposureTime)
+        if (result.exposureTime < 1) {
+          result.exposureTimeRat = `1/${Math.round(1 / result.exposureTime)}`
+        } else {
+          result.exposureTimeRat = `${result.exposureTime}s`
+        }
+      }
+      console.log(`  Exposure: ${result.exposureTimeRat}`)
+    }
+    
+    // 光圈
+    if (data.FNumber) {
+      result.fNumber = parseFloat(data.FNumber)
+      console.log(`  Aperture: f/${result.fNumber}`)
+    }
+    
+    // ISO
+    if (data.ISO) {
+      result.iso = parseInt(data.ISO)
+      console.log(`  ISO: ${result.iso}`)
+    }
+    
+    // 焦距
+    if (data.FocalLength) {
+      // 格式可能是 "57 mm" 或 "57"
+      result.focalLength = parseFloat(data.FocalLength)
+      console.log(`  Focal Length: ${result.focalLength}mm`)
+    }
+    
+    // 相机信息
+    if (data.Make) {
+      result.cameraMake = String(data.Make).trim()
+    }
+    if (data.Model) {
+      result.cameraModel = String(data.Model).trim()
+    }
+    if (result.cameraMake || result.cameraModel) {
+      console.log(`  Camera: ${result.cameraMake || ''} ${result.cameraModel || ''}`.trim())
+    }
+    
+    // 镜头信息
+    if (data.LensMake) {
+      result.lensMake = String(data.LensMake).trim()
+    }
+    if (data.LensModel) {
+      result.lensModel = String(data.LensModel).trim()
+    }
+    if (result.lensMake || result.lensModel) {
+      console.log(`  Lens: ${result.lensMake || ''} ${result.lensModel || ''}`.trim())
+    }
+    
+    // GPS 信息
+    if (data.GPSLatitude && data.GPSLongitude) {
+      // exiftool 格式: "36 deg 32' 39.72\" N" 或直接数值
+      result.latitude = parseGpsCoordinate(data.GPSLatitude, data.GPSLatitudeRef)
+      result.longitude = parseGpsCoordinate(data.GPSLongitude, data.GPSLongitudeRef)
+      console.log(`  GPS: ${result.latitude?.toFixed(6)}, ${result.longitude?.toFixed(6)}`)
+    }
+    
+    // 海拔
+    if (data.GPSAltitude) {
+      result.altitude = parseFloat(data.GPSAltitude)
+    }
+  } catch (e) {
+    console.warn('  ⚠️ Failed to extract EXIF with exiftool:', (e as Error).message)
+  }
+  
+  return result
+}
+
+/**
+ * 解析 GPS 坐标字符串
+ */
+function parseGpsCoordinate(coord: string | number, ref?: string): number | undefined {
+  if (typeof coord === 'number') {
+    return ref === 'S' || ref === 'W' ? -coord : coord
+  }
+  
+  // 格式: "36 deg 32' 39.72\" N" 或 "118 deg 45' 55.51\" W"
+  const match = coord.match(/(\d+)\s*deg\s*(\d+)'\s*([\d.]+)"?\s*([NSEW])?/)
+  if (match) {
+    const deg = parseFloat(match[1])
+    const min = parseFloat(match[2])
+    const sec = parseFloat(match[3])
+    const direction = match[4] || ref
+    let decimal = deg + min / 60 + sec / 3600
+    if (direction === 'S' || direction === 'W') {
+      decimal = -decimal
+    }
+    return decimal
+  }
+  
+  // 尝试直接解析为数值
+  const num = parseFloat(coord)
+  if (!isNaN(num)) {
+    return ref === 'S' || ref === 'W' ? -num : num
+  }
+  
+  return undefined
+}
+
+/**
+ * 从图片中提取 EXIF 信息
+ * 
+ * exif-reader 返回嵌套结构：
+ * - Image: Make, Model, Software, DateTime, etc.
+ * - Photo: ExposureTime, FNumber, ISOSpeedRatings, DateTimeOriginal, LensMake, LensModel, FocalLength, etc.
+ * - GPSInfo: GPSLatitude, GPSLongitude, GPSLatitudeRef, GPSLongitudeRef, etc.
+ */
+async function extractExif(buffer: Buffer, filePath?: string): Promise<ExifData> {
   const result: ExifData = {}
 
   try {
+    // 对于 AVIF 文件，使用 ffprobe 提取 EXIF（sharp 可能无法读取）
+    if (filePath && filePath.toLowerCase().endsWith('.avif')) {
+      return await extractExifWithFfprobe(filePath)
+    }
+    
     const metadata = await sharp(buffer).metadata()
     
     if (metadata.exif) {
-      // 动态导入 exif-reader
       const ExifReader = (await import('exif-reader')).default
-      const exif = ExifReader(metadata.exif) as Record<string, any>
+      const rawExif = ExifReader(metadata.exif)
       
-      // 拍摄时间
-      if (exif.DateTimeOriginal) {
-        result.datetime = exif.DateTimeOriginal
-      } else if (exif.CreateDate) {
-        result.datetime = exif.CreateDate
+      // 分别获取各部分
+      const image = rawExif.Image || {}
+      const photo = rawExif.Photo || {}
+      const gps = rawExif.GPSInfo || {}
+      
+      // Debug: 输出原始 EXIF 结构
+      // console.log('  Raw EXIF:', JSON.stringify(rawExif, null, 2))
+      
+      // ========== 拍摄时间 ==========
+      // 优先使用 DateTimeOriginal（实际拍摄时间）
+      const datetime = photo.DateTimeOriginal || photo.DateTimeDigitized || image.DateTime
+      if (datetime) {
+        result.datetime = datetime instanceof Date ? datetime : new Date(datetime)
+        console.log(`  DateTime: ${result.datetime.toISOString()}`)
       }
 
+      // ========== 曝光参数 ==========
       // 曝光时间
-      if (exif.ExposureTime) {
-        result.exposureTime = exif.ExposureTime
-        if (exif.ExposureTime < 1) {
-          result.exposureTimeRat = `1/${Math.round(1 / exif.ExposureTime)}`
+      if (photo.ExposureTime) {
+        result.exposureTime = photo.ExposureTime
+        if (photo.ExposureTime < 1) {
+          result.exposureTimeRat = `1/${Math.round(1 / photo.ExposureTime)}`
         } else {
-          result.exposureTimeRat = `${exif.ExposureTime}s`
+          result.exposureTimeRat = `${photo.ExposureTime}s`
         }
+        console.log(`  Exposure: ${result.exposureTimeRat}`)
       }
 
       // 光圈
-      if (exif.FNumber) {
-        result.fNumber = exif.FNumber
+      if (photo.FNumber) {
+        result.fNumber = photo.FNumber
+        console.log(`  Aperture: f/${result.fNumber}`)
       }
 
       // ISO
-      if (exif.ISO) {
-        result.iso = exif.ISO
-      } else if (exif.ISOSpeedRatings) {
-        result.iso = Array.isArray(exif.ISOSpeedRatings) 
-          ? exif.ISOSpeedRatings[0] 
-          : exif.ISOSpeedRatings
+      const iso = photo.ISOSpeedRatings || photo.RecommendedExposureIndex
+      if (iso) {
+        result.iso = Array.isArray(iso) ? iso[0] : iso
+        console.log(`  ISO: ${result.iso}`)
       }
 
       // 焦距
-      if (exif.FocalLength) {
-        result.focalLength = exif.FocalLength
+      if (photo.FocalLength) {
+        result.focalLength = photo.FocalLength
+        console.log(`  Focal Length: ${result.focalLength}mm`)
       }
 
-      // 相机信息
-      if (exif.Make) {
-        result.cameraMake = String(exif.Make).trim().replace(/\u0000/g, '')
+      // ========== 相机信息 ==========
+      if (image.Make) {
+        result.cameraMake = String(image.Make).trim().replace(/\u0000/g, '')
       }
-      if (exif.Model) {
-        result.cameraModel = String(exif.Model).trim().replace(/\u0000/g, '')
+      if (image.Model) {
+        result.cameraModel = String(image.Model).trim().replace(/\u0000/g, '')
       }
-
-      // 镜头信息
-      if (exif.LensMake) {
-        result.lensMake = String(exif.LensMake).trim().replace(/\u0000/g, '')
-      }
-      if (exif.LensModel) {
-        result.lensModel = String(exif.LensModel).trim().replace(/\u0000/g, '')
+      if (result.cameraMake || result.cameraModel) {
+        console.log(`  Camera: ${result.cameraMake || ''} ${result.cameraModel || ''}`.trim())
       }
 
-      // GPS 信息
-      if (exif.GPSLatitude && exif.GPSLongitude) {
-        const latRef = exif.GPSLatitudeRef || 'N'
-        const lonRef = exif.GPSLongitudeRef || 'E'
+      // ========== 镜头信息 ==========
+      if (photo.LensMake) {
+        result.lensMake = String(photo.LensMake).trim().replace(/\u0000/g, '')
+      }
+      if (photo.LensModel) {
+        result.lensModel = String(photo.LensModel).trim().replace(/\u0000/g, '')
+      }
+      if (result.lensMake || result.lensModel) {
+        console.log(`  Lens: ${result.lensMake || ''} ${result.lensModel || ''}`.trim())
+      }
+
+      // ========== GPS 信息 ==========
+      const gpsLat = gps.GPSLatitude
+      const gpsLon = gps.GPSLongitude
+      if (gpsLat && gpsLon) {
+        const latRef = gps.GPSLatitudeRef || 'N'
+        const lonRef = gps.GPSLongitudeRef || 'E'
         
-        let lat = exif.GPSLatitude
-        let lon = exif.GPSLongitude
+        let lat: number
+        let lon: number
 
-        // 转换度分秒为十进制
-        if (Array.isArray(lat)) {
-          lat = lat[0] + lat[1] / 60 + lat[2] / 3600
+        // GPS 坐标可能是多种格式：
+        // 1. [度, 分, 秒] - 传统格式
+        // 2. [度, 分.小数, 0] - Lightroom 格式（秒为0，分带小数）
+        // 3. 直接十进制数
+        if (Array.isArray(gpsLat)) {
+          // 度 + 分/60 + 秒/3600
+          lat = gpsLat[0] + gpsLat[1] / 60 + (gpsLat[2] || 0) / 3600
+        } else {
+          lat = gpsLat
         }
-        if (Array.isArray(lon)) {
-          lon = lon[0] + lon[1] / 60 + lon[2] / 3600
+        
+        if (Array.isArray(gpsLon)) {
+          lon = gpsLon[0] + gpsLon[1] / 60 + (gpsLon[2] || 0) / 3600
+        } else {
+          lon = gpsLon
         }
 
         result.latitude = latRef === 'S' ? -lat : lat
         result.longitude = lonRef === 'W' ? -lon : lon
+        console.log(`  GPS: ${result.latitude.toFixed(6)}, ${result.longitude.toFixed(6)}`)
       }
 
       // 海拔
-      if (exif.GPSAltitude) {
-        result.altitude = exif.GPSAltitude
+      if (gps.GPSAltitude) {
+        result.altitude = gps.GPSAltitude
       }
+    } else {
+      console.log('  ⚠️ No EXIF data found in image')
     }
   } catch (e) {
-    console.warn('  Warning: Failed to extract EXIF:', (e as Error).message)
+    console.warn('  ⚠️ Failed to extract EXIF:', (e as Error).message)
   }
 
   return result
@@ -334,17 +521,41 @@ async function processAndUpload(filePath: string) {
     console.log(`  Location: ${config.country || ''} > ${config.prefecture || ''} > ${config.city}`)
   }
   
-  // 读取文件
-  const buffer = fs.readFileSync(filePath)
+  // 获取图片尺寸（使用 ffprobe）
+  // 注意：高端相机（如 Nikon Z8/Z9）的 AVIF 文件包含多个流（缩略图、预览图、主图）
+  // 需要找到分辨率最大的流（主图），而不是默认的第一个流（通常是缩略图）
+  const ext = path.extname(filePath).toLowerCase()
+  let metadata: { width: number; height: number; streamIndex: number }
   
-  // 使用 sharp 加载图片（自动处理 HEIC 等格式）
-  const image = sharp(buffer, { failOnError: false })
-  const metadata = await image.metadata()
+  try {
+    const probeOutput = execSync(
+      `ffprobe -v error -select_streams v -show_entries stream=width,height,index -of json "${filePath}"`,
+      { encoding: 'utf-8' }
+    )
+    const probeData = JSON.parse(probeOutput)
+    
+    // 找到像素面积最大的流（即主图）
+    const streams = probeData.streams as Array<{ width: number; height: number; index: number }>
+    const mainStream = streams.sort((a, b) => (b.width * b.height) - (a.width * a.height))[0]
+    
+    metadata = {
+      width: mainStream.width,
+      height: mainStream.height,
+      streamIndex: mainStream.index
+    }
+    
+    if (streams.length > 1) {
+      console.log(`  Found ${streams.length} streams, using stream #${mainStream.index} (largest: ${mainStream.width}x${mainStream.height})`)
+    }
+  } catch (e) {
+    console.error(`  ✗ Failed to get image dimensions. Make sure ffmpeg/ffprobe is installed.`)
+    throw e
+  }
   
-  console.log(`  Original: ${metadata.width}x${metadata.height}, format: ${metadata.format}`)
+  console.log(`  Original: ${metadata.width}x${metadata.height}, format: ${ext.slice(1)}`)
 
-  // 提取 EXIF
-  const exif = await extractExif(buffer)
+  // 提取 EXIF（使用 exiftool）
+  const exif = await extractExifWithFfprobe(filePath)
   if (exif.cameraMake) {
     console.log(`  Camera: ${exif.cameraMake} ${exif.cameraModel || ''}`)
   }
@@ -362,52 +573,103 @@ async function processAndUpload(filePath: string) {
 
   const results: Record<string, { url: string; width: number; height: number }> = {}
 
-  // 生成各尺寸的 WebP
-  for (const [sizeName, maxWidth] of Object.entries(SIZES)) {
-    const quality = WEBP_QUALITY[sizeName as keyof typeof WEBP_QUALITY]
-    
-    let processedImage = image.clone()
-    
-    // 如果原图比目标尺寸大，则缩放
-    if ((metadata.width || 0) > maxWidth) {
-      processedImage = processedImage.resize(maxWidth, null, { 
-        withoutEnlargement: true,
-        kernel: 'lanczos3' // 高质量缩放算法
-      })
-    }
-    
-    // 转换为 WebP
-    const { data, info } = await processedImage
-      .webp({ quality, effort: 4 })
-      .toBuffer({ resolveWithObject: true })
-    
-    // 上传
-    const key = `${baseKey}_${sizeName}.webp`
-    const url = await uploadToS3(data, key, 'image/webp')
-    
-    results[sizeName] = { 
-      url, 
-      width: info.width, 
-      height: info.height 
-    }
-    
-    console.log(`  ${sizeName}: ${info.width}x${info.height}, ${(data.length / 1024).toFixed(0)}KB`)
+  // 第一步：使用 ImageMagick 将原图解码为 16-bit TIFF（只解码一次）
+  // ImageMagick 对 AVIF 瓦片合并的支持比 ffmpeg 更可靠
+  const tempDecoded = path.join(os.tmpdir(), `decoded_${Date.now()}.tiff`)
+  try {
+    console.log(`  Decoding with ImageMagick...`)
+    execSync(
+      `magick "${filePath}[0]" -depth 16 "${tempDecoded}"`,
+      { stdio: 'pipe' }
+    )
+  } catch (e) {
+    console.error(`  ✗ ImageMagick decode failed. Make sure ImageMagick is installed:`)
+    console.error(`    winget install ImageMagick.ImageMagick`)
+    throw e
   }
-
-  // 上传原图（保留最高质量，用于 HDR 显示或下载）
-  const originalWebp = await image
-    .clone()
-    .webp({ quality: 95, effort: 6 })
-    .toBuffer({ resolveWithObject: true })
   
-  const originalKey = `${baseKey}_original.webp`
-  const originalUrl = await uploadToS3(originalWebp.data, originalKey, 'image/webp')
-  results.original = { 
-    url: originalUrl, 
-    width: originalWebp.info.width, 
-    height: originalWebp.info.height 
+  // 关键：从解码后的 TIFF 获取真实尺寸（而非 ffprobe 可能取到的预览流尺寸）
+  let originalWidth = 0
+  let originalHeight = 0
+  try {
+    const identifyOutput = execSync(
+      `magick identify -format "%w %h" "${tempDecoded}"`,
+      { encoding: 'utf-8' }
+    ).trim()
+    const [decW, decH] = identifyOutput.split(' ').map(Number)
+    originalWidth = decW
+    originalHeight = decH
+    console.log(`  Decoded: ${originalWidth}x${originalHeight} TIFF (16-bit)`)
+  } catch (e) {
+    console.error(`  ✗ Failed to get decoded image dimensions`)
+    throw e
   }
-  console.log(`  original: ${originalWebp.info.width}x${originalWebp.info.height}, ${(originalWebp.data.length / 1024).toFixed(0)}KB`)
+  
+  // 第二步：从解码后的 TIFF 生成各尺寸 AVIF
+  for (const [sizeName, maxWidth] of Object.entries(SIZES)) {
+    const quality = AVIF_QUALITY[sizeName as keyof typeof AVIF_QUALITY]
+    
+    let targetWidth = originalWidth
+    let targetHeight = originalHeight
+    if (originalWidth > maxWidth) {
+      targetWidth = maxWidth
+      targetHeight = Math.round(originalHeight * maxWidth / originalWidth)
+      if (targetHeight % 2 !== 0) targetHeight += 1
+    }
+    
+    const tempAvif = path.join(os.tmpdir(), `avif_${sizeName}_${Date.now()}.avif`)
+    
+    try {
+      let vfFilters: string[] = []
+      if (originalWidth > maxWidth) {
+        vfFilters.push(`scale=${targetWidth}:${targetHeight}:flags=lanczos+accurate_rnd+full_chroma_int`)
+      }
+      vfFilters.push('format=yuv444p10le')
+      const vfParam = `-vf "${vfFilters.join(',')}"`
+      
+      // CPU 编码（libaom-av1）- 最高质量
+      const crf = Math.max(8, Math.round(30 - quality * 0.22)) // quality 75→13, 82→12, 92→10
+      
+      execSync(
+        `ffmpeg -i "${tempDecoded}" ${vfParam} -c:v libaom-av1 -crf ${crf} -cpu-used 0 -still-picture 1 -aq-mode 1 -tune ssim -y "${tempAvif}"`,
+        { stdio: 'pipe' }
+      )
+      
+      const avifData = fs.readFileSync(tempAvif)
+      fs.unlinkSync(tempAvif)
+      
+      const key = `${baseKey}_${sizeName}.avif`
+      const url = await uploadToS3(avifData, key, 'image/avif')
+      
+      const outputWidth = originalWidth > maxWidth ? targetWidth : originalWidth
+      const outputHeight = originalWidth > maxWidth ? targetHeight : originalHeight
+      
+      results[sizeName] = { url, width: outputWidth, height: outputHeight }
+      console.log(`  ${sizeName}: ${outputWidth}x${outputHeight}, ${(avifData.length / 1024).toFixed(0)}KB (10-bit)`)
+    } catch (e) {
+      console.error(`  ✗ Failed to generate ${sizeName}:`, (e as Error).message)
+      throw e
+    }
+  }
+  
+  // 清理解码后的临时文件
+  fs.unlinkSync(tempDecoded)
+
+  // 上传原图（直接使用原始文件，不重新编码，保留完整质量）
+  try {
+    const originalData = fs.readFileSync(filePath)
+    const originalKey = `${baseKey}_original.avif`
+    const originalUrl = await uploadToS3(originalData, originalKey, 'image/avif')
+    results.original = { 
+      url: originalUrl, 
+      width: originalWidth, 
+      height: originalHeight 
+    }
+    console.log(`  original: ${originalWidth}x${originalHeight}, ${(originalData.length / 1024 / 1024).toFixed(2)}MB (原始文件)`)
+  } catch (e) {
+    console.error(`  ✗ Failed to upload original:`, (e as Error).message)
+    throw e
+  }
 
   // 处理相机信息
   let cameraId: number | null = null

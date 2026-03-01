@@ -30,21 +30,27 @@ import path from 'path'
 import sharp from 'sharp'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import postgres from 'postgres'
+import { execSync } from 'child_process'
+import os from 'os'
 import 'dotenv/config'
 
 const SIZES = {
   thumb: 400,
   medium: 1200,
-  large: 2400,
+  large: 3840,   // 4K
 }
 
-const WEBP_QUALITY = {
-  thumb: 80,
-  medium: 85,
-  large: 90,
+// AVIF 质量配置（0-100，越高越好）
+const AVIF_QUALITY = {
+  thumb: 75,
+  medium: 82,
+  large: 92,     // 4K 使用更高质量
 }
 
-const SUPPORTED_FORMATS = /\.(jpg|jpeg|png|webp|heic|heif|tiff|tif)$/i
+// 使用 CPU 编码以支持 10-bit 4:4:4 色度采样（最高质量）
+console.log('ℹ 使用 CPU 编码 (libaom-av1, 10-bit 4:4:4)')
+
+const SUPPORTED_FORMATS = /\.(jpg|jpeg|png|webp|avif|heic|heif|tiff|tif)$/i
 
 const s3Client = new S3Client({
   endpoint: process.env.S3_ENDPOINT,
@@ -102,57 +108,176 @@ interface ExifData {
   altitude?: number
 }
 
-async function extractExif(buffer: Buffer): Promise<ExifData> {
+/**
+ * 使用 exiftool 从 AVIF 文件提取 EXIF 信息
+ */
+async function extractExifWithExiftool(filePath: string): Promise<ExifData> {
+  const result: ExifData = {}
+  
+  try {
+    const jsonOutput = execSync(`exiftool -json "${filePath}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+    const data = JSON.parse(jsonOutput)[0]
+    
+    if (data.DateTimeOriginal) {
+      const dtStr = data.DateTimeOriginal.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3')
+      result.datetime = new Date(dtStr)
+      console.log(`  DateTime: ${result.datetime.toISOString()}`)
+    }
+    
+    if (data.ExposureTime) {
+      if (typeof data.ExposureTime === 'string' && data.ExposureTime.includes('/')) {
+        const [num, den] = data.ExposureTime.split('/')
+        result.exposureTime = parseInt(num) / parseInt(den)
+        result.exposureTimeRat = data.ExposureTime
+      } else {
+        result.exposureTime = parseFloat(data.ExposureTime)
+        result.exposureTimeRat = result.exposureTime < 1 ? `1/${Math.round(1 / result.exposureTime)}` : `${result.exposureTime}s`
+      }
+      console.log(`  Exposure: ${result.exposureTimeRat}`)
+    }
+    
+    if (data.FNumber) {
+      result.fNumber = parseFloat(data.FNumber)
+      console.log(`  Aperture: f/${result.fNumber}`)
+    }
+    
+    if (data.ISO) {
+      result.iso = parseInt(data.ISO)
+      console.log(`  ISO: ${result.iso}`)
+    }
+    
+    if (data.FocalLength) {
+      result.focalLength = parseFloat(data.FocalLength)
+      console.log(`  Focal Length: ${result.focalLength}mm`)
+    }
+    
+    if (data.Make) result.cameraMake = String(data.Make).trim()
+    if (data.Model) result.cameraModel = String(data.Model).trim()
+    if (result.cameraMake || result.cameraModel) {
+      console.log(`  Camera: ${result.cameraMake || ''} ${result.cameraModel || ''}`.trim())
+    }
+    
+    if (data.LensMake) result.lensMake = String(data.LensMake).trim()
+    if (data.LensModel) result.lensModel = String(data.LensModel).trim()
+    if (result.lensMake || result.lensModel) {
+      console.log(`  Lens: ${result.lensMake || ''} ${result.lensModel || ''}`.trim())
+    }
+    
+    if (data.GPSLatitude && data.GPSLongitude) {
+      result.latitude = parseGpsCoordinate(data.GPSLatitude, data.GPSLatitudeRef)
+      result.longitude = parseGpsCoordinate(data.GPSLongitude, data.GPSLongitudeRef)
+      if (result.latitude && result.longitude) {
+        console.log(`  GPS: ${result.latitude.toFixed(6)}, ${result.longitude.toFixed(6)}`)
+      }
+    }
+    
+    if (data.GPSAltitude) result.altitude = parseFloat(data.GPSAltitude)
+  } catch (e) {
+    console.warn('  ⚠️ Failed to extract EXIF with exiftool:', (e as Error).message)
+  }
+  
+  return result
+}
+
+function parseGpsCoordinate(coord: string | number, ref?: string): number | undefined {
+  if (typeof coord === 'number') {
+    return ref === 'S' || ref === 'W' ? -coord : coord
+  }
+  const match = coord.match(/(\d+)\s*deg\s*(\d+)'\s*([\d.]+)"?\s*([NSEW])?/)
+  if (match) {
+    const deg = parseFloat(match[1])
+    const min = parseFloat(match[2])
+    const sec = parseFloat(match[3])
+    const direction = match[4] || ref
+    let decimal = deg + min / 60 + sec / 3600
+    if (direction === 'S' || direction === 'W') decimal = -decimal
+    return decimal
+  }
+  const num = parseFloat(coord)
+  if (!isNaN(num)) return ref === 'S' || ref === 'W' ? -num : num
+  return undefined
+}
+
+/**
+ * 从图片中提取 EXIF 信息
+ */
+async function extractExif(buffer: Buffer, filePath?: string): Promise<ExifData> {
   const result: ExifData = {}
 
   try {
+    // 对于 AVIF 文件使用 exiftool
+    if (filePath && filePath.toLowerCase().endsWith('.avif')) {
+      return await extractExifWithExiftool(filePath)
+    }
+    
     const metadata = await sharp(buffer).metadata()
     
     if (metadata.exif) {
       const ExifReader = (await import('exif-reader')).default
-      const exif = ExifReader(metadata.exif)
+      const rawExif = ExifReader(metadata.exif)
       
-      if (exif.DateTimeOriginal) {
-        result.datetime = exif.DateTimeOriginal
-      } else if (exif.CreateDate) {
-        result.datetime = exif.CreateDate
+      const image = rawExif.Image || {}
+      const photo = rawExif.Photo || {}
+      const gps = rawExif.GPSInfo || {}
+      
+      const datetime = photo.DateTimeOriginal || photo.DateTimeDigitized || image.DateTime
+      if (datetime) {
+        result.datetime = datetime instanceof Date ? datetime : new Date(datetime)
+        console.log(`  DateTime: ${result.datetime.toISOString()}`)
       }
 
-      if (exif.ExposureTime) {
-        result.exposureTime = exif.ExposureTime
-        if (exif.ExposureTime < 1) {
-          result.exposureTimeRat = `1/${Math.round(1 / exif.ExposureTime)}`
-        } else {
-          result.exposureTimeRat = `${exif.ExposureTime}s`
-        }
+      if (photo.ExposureTime) {
+        result.exposureTime = photo.ExposureTime
+        result.exposureTimeRat = photo.ExposureTime < 1 ? `1/${Math.round(1 / photo.ExposureTime)}` : `${photo.ExposureTime}s`
+        console.log(`  Exposure: ${result.exposureTimeRat}`)
       }
 
-      if (exif.FNumber) result.fNumber = exif.FNumber
-      if (exif.ISO) result.iso = exif.ISO
-      else if (exif.ISOSpeedRatings) {
-        result.iso = Array.isArray(exif.ISOSpeedRatings) ? exif.ISOSpeedRatings[0] : exif.ISOSpeedRatings
+      if (photo.FNumber) {
+        result.fNumber = photo.FNumber
+        console.log(`  Aperture: f/${result.fNumber}`)
       }
-      if (exif.FocalLength) result.focalLength = exif.FocalLength
-      if (exif.Make) result.cameraMake = String(exif.Make).trim().replace(/\u0000/g, '')
-      if (exif.Model) result.cameraModel = String(exif.Model).trim().replace(/\u0000/g, '')
-      if (exif.LensMake) result.lensMake = String(exif.LensMake).trim().replace(/\u0000/g, '')
-      if (exif.LensModel) result.lensModel = String(exif.LensModel).trim().replace(/\u0000/g, '')
 
-      if (exif.GPSLatitude && exif.GPSLongitude) {
-        const latRef = exif.GPSLatitudeRef || 'N'
-        const lonRef = exif.GPSLongitudeRef || 'E'
-        let lat = exif.GPSLatitude
-        let lon = exif.GPSLongitude
-        if (Array.isArray(lat)) lat = lat[0] + lat[1] / 60 + lat[2] / 3600
-        if (Array.isArray(lon)) lon = lon[0] + lon[1] / 60 + lon[2] / 3600
+      const iso = photo.ISOSpeedRatings || photo.RecommendedExposureIndex
+      if (iso) {
+        result.iso = Array.isArray(iso) ? iso[0] : iso
+        console.log(`  ISO: ${result.iso}`)
+      }
+
+      if (photo.FocalLength) {
+        result.focalLength = photo.FocalLength
+        console.log(`  Focal Length: ${result.focalLength}mm`)
+      }
+
+      if (image.Make) result.cameraMake = String(image.Make).trim().replace(/\u0000/g, '')
+      if (image.Model) result.cameraModel = String(image.Model).trim().replace(/\u0000/g, '')
+      if (result.cameraMake || result.cameraModel) {
+        console.log(`  Camera: ${result.cameraMake || ''} ${result.cameraModel || ''}`.trim())
+      }
+
+      if (photo.LensMake) result.lensMake = String(photo.LensMake).trim().replace(/\u0000/g, '')
+      if (photo.LensModel) result.lensModel = String(photo.LensModel).trim().replace(/\u0000/g, '')
+      if (result.lensMake || result.lensModel) {
+        console.log(`  Lens: ${result.lensMake || ''} ${result.lensModel || ''}`.trim())
+      }
+
+      const gpsLat = gps.GPSLatitude
+      const gpsLon = gps.GPSLongitude
+      if (gpsLat && gpsLon) {
+        const latRef = gps.GPSLatitudeRef || 'N'
+        const lonRef = gps.GPSLongitudeRef || 'E'
+        let lat = Array.isArray(gpsLat) ? gpsLat[0] + gpsLat[1] / 60 + (gpsLat[2] || 0) / 3600 : gpsLat
+        let lon = Array.isArray(gpsLon) ? gpsLon[0] + gpsLon[1] / 60 + (gpsLon[2] || 0) / 3600 : gpsLon
         result.latitude = latRef === 'S' ? -lat : lat
         result.longitude = lonRef === 'W' ? -lon : lon
+        console.log(`  GPS: ${result.latitude.toFixed(6)}, ${result.longitude.toFixed(6)}`)
       }
 
-      if (exif.GPSAltitude) result.altitude = exif.GPSAltitude
+      if (gps.GPSAltitude) result.altitude = gps.GPSAltitude
+    } else {
+      console.log('  ⚠️ No EXIF data found in image')
     }
   } catch (e) {
-    console.warn('  Warning: Failed to extract EXIF:', (e as Error).message)
+    console.warn('  ⚠️ Failed to extract EXIF:', (e as Error).message)
   }
 
   return result
@@ -297,13 +422,40 @@ async function processAndUpload(filePath: string, config: AnimalConfig) {
     console.log(`  Location: ${config.country || ''} > ${config.prefecture || ''} > ${config.city}`)
   }
   
-  const buffer = fs.readFileSync(filePath)
-  const image = sharp(buffer, { failOnError: false })
-  const metadata = await image.metadata()
+  // 获取图片尺寸（使用 ffprobe）
+  // 注意：高端相机的 AVIF 文件包含多个流，需要找到主图（分辨率最大的流）
+  const ext = path.extname(filePath).toLowerCase()
+  let metadata: { width: number; height: number; streamIndex: number }
   
-  console.log(`  Original: ${metadata.width}x${metadata.height}, format: ${metadata.format}`)
+  try {
+    const probeOutput = execSync(
+      `ffprobe -v error -select_streams v -show_entries stream=width,height,index -of json "${filePath}"`,
+      { encoding: 'utf-8' }
+    )
+    const probeData = JSON.parse(probeOutput)
+    
+    // 找到像素面积最大的流（即主图）
+    const streams = probeData.streams as Array<{ width: number; height: number; index: number }>
+    const mainStream = streams.sort((a, b) => (b.width * b.height) - (a.width * a.height))[0]
+    
+    metadata = {
+      width: mainStream.width,
+      height: mainStream.height,
+      streamIndex: mainStream.index
+    }
+    
+    if (streams.length > 1) {
+      console.log(`  Found ${streams.length} streams, using stream #${mainStream.index} (largest: ${mainStream.width}x${mainStream.height})`)
+    }
+  } catch (e) {
+    console.error(`  ✗ Failed to get image dimensions. Make sure ffmpeg/ffprobe is installed.`)
+    throw e
+  }
+  
+  console.log(`  Original: ${metadata.width}x${metadata.height}, format: ${ext.slice(1)}`)
 
-  const exif = await extractExif(buffer)
+  // 提取 EXIF（使用 exiftool）
+  const exif = await extractExifWithExiftool(filePath)
   if (exif.cameraMake) {
     console.log(`  Camera: ${exif.cameraMake} ${exif.cameraModel || ''}`)
   }
@@ -317,38 +469,97 @@ async function processAndUpload(filePath: string, config: AnimalConfig) {
 
   const results: Record<string, { url: string; width: number; height: number }> = {}
 
+  // 第一步：使用 ImageMagick 将原图解码为 16-bit TIFF（只解码一次）
+  // ImageMagick 对 AVIF 瓦片合并的支持比 ffmpeg 更可靠
+  const tempDecoded = path.join(os.tmpdir(), `decoded_${Date.now()}.tiff`)
+  try {
+    console.log(`  Decoding with ImageMagick...`)
+    execSync(
+      `magick "${filePath}[0]" -depth 16 "${tempDecoded}"`,
+      { stdio: 'pipe' }
+    )
+  } catch (e) {
+    console.error(`  ✗ ImageMagick decode failed. Make sure ImageMagick is installed:`)
+    console.error(`    winget install ImageMagick.ImageMagick`)
+    throw e
+  }
+  
+  // 关键：从解码后的 TIFF 获取真实尺寸（而非 ffprobe 可能取到的预览流尺寸）
+  let originalWidth = 0
+  let originalHeight = 0
+  try {
+    const identifyOutput = execSync(
+      `magick identify -format "%w %h" "${tempDecoded}"`,
+      { encoding: 'utf-8' }
+    ).trim()
+    const [decW, decH] = identifyOutput.split(' ').map(Number)
+    originalWidth = decW
+    originalHeight = decH
+    console.log(`  Decoded: ${originalWidth}x${originalHeight} TIFF (16-bit)`)
+  } catch (e) {
+    console.error(`  ✗ Failed to get decoded image dimensions`)
+    throw e
+  }
+  
+  // 第二步：从解码后的 TIFF 生成各尺寸 AVIF
   for (const [sizeName, maxWidth] of Object.entries(SIZES)) {
-    const quality = WEBP_QUALITY[sizeName as keyof typeof WEBP_QUALITY]
+    const quality = AVIF_QUALITY[sizeName as keyof typeof AVIF_QUALITY]
     
-    let processedImage = image.clone()
-    
-    if ((metadata.width || 0) > maxWidth) {
-      processedImage = processedImage.resize(maxWidth, null, { 
-        withoutEnlargement: true,
-        kernel: 'lanczos3'
-      })
+    let targetWidth = originalWidth
+    let targetHeight = originalHeight
+    if (originalWidth > maxWidth) {
+      targetWidth = maxWidth
+      targetHeight = Math.round(originalHeight * maxWidth / originalWidth)
+      if (targetHeight % 2 !== 0) targetHeight += 1
     }
     
-    const { data, info } = await processedImage
-      .webp({ quality, effort: 4 })
-      .toBuffer({ resolveWithObject: true })
+    const tempAvif = path.join(os.tmpdir(), `avif_${sizeName}_${Date.now()}.avif`)
     
-    const key = `${baseKey}_${sizeName}.webp`
-    const url = await uploadToS3(data, key, 'image/webp')
-    
-    results[sizeName] = { url, width: info.width, height: info.height }
-    console.log(`  ${sizeName}: ${info.width}x${info.height}, ${(data.length / 1024).toFixed(0)}KB`)
+    try {
+      let vfFilters: string[] = []
+      if (originalWidth > maxWidth) {
+        vfFilters.push(`scale=${targetWidth}:${targetHeight}:flags=lanczos+accurate_rnd+full_chroma_int`)
+      }
+      vfFilters.push('format=yuv444p10le')
+      const vfParam = `-vf "${vfFilters.join(',')}"`
+      const crf = Math.max(8, Math.round(30 - quality * 0.22))
+      
+      execSync(
+        `ffmpeg -i "${tempDecoded}" ${vfParam} -c:v libaom-av1 -crf ${crf} -cpu-used 0 -still-picture 1 -aq-mode 1 -tune ssim -y "${tempAvif}"`,
+        { stdio: 'pipe' }
+      )
+      
+      const avifData = fs.readFileSync(tempAvif)
+      fs.unlinkSync(tempAvif)
+      
+      const key = `${baseKey}_${sizeName}.avif`
+      const url = await uploadToS3(avifData, key, 'image/avif')
+      
+      const outputWidth = originalWidth > maxWidth ? targetWidth : originalWidth
+      const outputHeight = originalWidth > maxWidth ? targetHeight : originalHeight
+      
+      results[sizeName] = { url, width: outputWidth, height: outputHeight }
+      console.log(`  ${sizeName}: ${outputWidth}x${outputHeight}, ${(avifData.length / 1024).toFixed(0)}KB (10-bit)`)
+    } catch (e) {
+      console.error(`  ✗ Failed to generate ${sizeName}:`, (e as Error).message)
+      throw e
+    }
   }
-
-  const originalWebp = await image
-    .clone()
-    .webp({ quality: 95, effort: 6 })
-    .toBuffer({ resolveWithObject: true })
   
-  const originalKey = `${baseKey}_original.webp`
-  const originalUrl = await uploadToS3(originalWebp.data, originalKey, 'image/webp')
-  results.original = { url: originalUrl, width: originalWebp.info.width, height: originalWebp.info.height }
-  console.log(`  original: ${originalWebp.info.width}x${originalWebp.info.height}, ${(originalWebp.data.length / 1024).toFixed(0)}KB`)
+  // 清理解码后的临时文件
+  fs.unlinkSync(tempDecoded)
+
+  // 上传原图（直接使用原始文件，不重新编码，保留完整质量）
+  try {
+    const originalData = fs.readFileSync(filePath)
+    const originalKey = `${baseKey}_original.avif`
+    const originalUrl = await uploadToS3(originalData, originalKey, 'image/avif')
+    results.original = { url: originalUrl, width: originalWidth, height: originalHeight }
+    console.log(`  original: ${originalWidth}x${originalHeight}, ${(originalData.length / 1024 / 1024).toFixed(2)}MB (原始文件)`)
+  } catch (e) {
+    console.error(`  ✗ Failed to upload original:`, (e as Error).message)
+    throw e
+  }
 
   // 处理相机信息
   let cameraId: number | null = null

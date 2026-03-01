@@ -7,6 +7,7 @@ import appleLogo from '../assets/logos/Apple.svg';
 import appleLogoDark from '../assets/logos/Apple_dark.svg';
 import panasonicLogo from '../assets/logos/Panasonic.svg';
 import panasonicLogoDark from '../assets/logos/Panasonic_dark.svg';
+import nikonLogo from '../assets/logos/Nikon-logo-tm.svg';
 
 const logos: { [k: string]: { light: string, dark: string, style: string } } = {
   'SONY': {
@@ -28,6 +29,11 @@ const logos: { [k: string]: { light: string, dark: string, style: string } } = {
     light: panasonicLogo,
     dark: panasonicLogoDark,
     style: 'h-[0.7rem]',
+  },
+  'NIKON CORPORATION': {
+    light: nikonLogo,
+    dark: nikonLogo,
+    style: 'h-[0.8rem]',
   },
 }
 

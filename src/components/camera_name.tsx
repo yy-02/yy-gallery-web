@@ -1,10 +1,19 @@
 import sonyAlpha from '../assets/logos/Sony_Alpha_logo.svg';
 import lumix from '../assets/logos/Lumix_logo.svg';
 import lumixDark from '../assets/logos/Lumix_logo_dark.svg';
+import nikonZ5Black from '../assets/logos/z-5-black.svg';
+import nikonZ5White from '../assets/logos/z-5-white.svg';
+import nikonZ8Black from '../assets/logos/z-8-black.svg';
+import nikonZ8White from '../assets/logos/z-8-white.svg';
 import { Camera } from "../models/gallery.ts";
 import useDarkMode from "use-dark-mode";
 import { Tooltip } from "@heroui/react";
 import { JSX } from "react";
+
+const nikonModels: { [k: string]: { light: string, dark: string } } = {
+  'Z 5': { light: nikonZ5Black, dark: nikonZ5White },
+  'Z 8': { light: nikonZ8Black, dark: nikonZ8White },
+}
 
 export interface CameraNameProps {
   camera?: Camera
@@ -30,6 +39,13 @@ export default function CameraName(props: CameraNameProps) {
       <div className='flex items-center'>
         <img alt='Lumix' src={darkmode.value ? lumixDark : lumix} className='h-[0.8rem] mr-1 inline'/>
         {props.camera.general_name.replace('Lumix', '')}
+      </div>
+    </Tooltip>
+  } else if (props.camera.manufacture.name === 'NIKON CORPORATION' && nikonModels[props.camera.general_name]) {
+    const modelLogo = nikonModels[props.camera.general_name]
+    cameraName = <Tooltip content={props.camera.model} showArrow placement='right'>
+      <div className='flex items-center'>
+        <img alt={props.camera.general_name} src={darkmode.value ? modelLogo.dark : modelLogo.light} className='h-[0.9rem] inline'/>
       </div>
     </Tooltip>
   } else {
