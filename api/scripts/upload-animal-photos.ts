@@ -199,6 +199,43 @@ function parseGpsCoordinate(coord: string | number, ref?: string): number | unde
 }
 
 /**
+ * 根据相机型号生成 general_name（用于前端 logo 显示）
+ */
+function getGeneralCameraName(model: string): string | null {
+  // Nikon 相机
+  if (model.includes('NIKON Z 5') || model === 'Z 5') return 'Z 5'
+  if (model.includes('NIKON Z 8') || model === 'Z 8') return 'Z 8'
+  if (model.includes('NIKON Z 6') || model === 'Z 6') return 'Z 6'
+  if (model.includes('NIKON Z 7') || model === 'Z 7') return 'Z 7'
+  if (model.includes('NIKON Z 9') || model === 'Z 9') return 'Z 9'
+  if (model.includes('NIKON Z6') || model === 'Z6') return 'Z 6'
+  if (model.includes('NIKON Z7') || model === 'Z7') return 'Z 7'
+  if (model.includes('NIKON Z8') || model === 'Z8') return 'Z 8'
+  if (model.includes('NIKON Z9') || model === 'Z9') return 'Z 9'
+  if (model.includes('NIKON Zf') || model === 'Zf') return 'Zf'
+  if (model.includes('NIKON Zfc') || model === 'Zfc') return 'Zfc'
+  
+  // Canon 相机
+  if (model.startsWith('Canon ')) return model
+  if (model.startsWith('EOS ')) return `Canon ${model}`
+  
+  // Sony 相机
+  if (model.includes('ILCE-')) {
+    const match = model.match(/ILCE-(\d+)/)
+    if (match) return `α${match[1]}`
+  }
+  if (model.includes('α')) return model
+  
+  // Panasonic Lumix
+  if (model.includes('DC-')) {
+    const match = model.match(/DC-([A-Z0-9]+)/)
+    if (match) return `Lumix ${match[1]}`
+  }
+  
+  return model
+}
+
+/**
  * 从图片中提取 EXIF 信息
  */
 async function extractExif(buffer: Buffer, filePath?: string): Promise<ExifData> {
@@ -573,12 +610,19 @@ async function processAndUpload(filePath: string, config: AnimalConfig) {
       manufactureId = manufacture[0].id
     }
 
+    // 生成 general_name（用于前端 logo 显示）
+    const generalName = getGeneralCameraName(exif.cameraModel)
+
     let camera = await sql`SELECT id FROM cameras WHERE model = ${exif.cameraModel} LIMIT 1`
     if (camera.length === 0) {
-      const [newCamera] = await sql`INSERT INTO cameras (model, manufacture_id) VALUES (${exif.cameraModel}, ${manufactureId}) RETURNING id`
+      const [newCamera] = await sql`INSERT INTO cameras (model, manufacture_id, general_name) VALUES (${exif.cameraModel}, ${manufactureId}, ${generalName}) RETURNING id`
       cameraId = newCamera.id
     } else {
       cameraId = camera[0].id
+      // 如果已存在但没有 general_name，更新它
+      if (generalName) {
+        await sql`UPDATE cameras SET general_name = ${generalName} WHERE id = ${cameraId} AND general_name IS NULL`
+      }
     }
   }
 
