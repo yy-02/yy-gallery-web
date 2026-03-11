@@ -1,8 +1,8 @@
-# Boar Gallery
+# Y Gallery
 
-This is the frontend service for [Boar Gallery](https://gallery.boar.osaka).
+This is the frontend service forked from [Boar Gallery]([https://gallery.boar.osaka](https://github.com/hebingchang/boar-gallery-web)), thank you Boar :)
 
-It has to work with the specific backend, which is not yet open source.
+It has to work with the specific backend.
 
 ## Development
 
